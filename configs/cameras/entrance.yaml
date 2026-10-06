@@ -1,0 +1,7 @@
+# Example geometry for the entrance camera - redraw it for your camera with
+#   python tools/setup_zones.py --image snapshots/entrance.jpg --out configs/cameras/entrance.yaml
+frame_size: [1920, 1080]
+lines:
+  door: {a: [520, 610], b: [1400, 610], in_point: [960, 950]}   # in_point = any point inside the store
+zones:
+  promo: [[1420, 700], [1900, 700], [1900, 1070], [1420, 1070]]

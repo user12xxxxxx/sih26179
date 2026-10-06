@@ -1,0 +1,114 @@
+# Mock store (N3): entrance + checkout + shelf, all three pillars in one pipeline.
+#
+# Grown from prototype0.yaml with one more camera. Same idea:
+#
+#   python -m drishti snapshot clips/door.mp4      -> clips/door_grid.jpg
+#   python -m drishti snapshot clips/counter.mp4   -> clips/counter_grid.jpg
+#   python -m drishti snapshot clips/shelf.mp4     -> clips/shelf_grid.jpg
+#   ... replace the example line/zone/shelf numbers below with yours, then:
+#
+#   python -m drishti run configs/mock_store.yaml
+#   python -m drishti report --db out/mock_store/events.db
+#   python -m drishti serve  --db out/mock_store/events.db   -> http://127.0.0.1:8000
+#
+# Every [x, y] is a pixel position read off a grid image: x across, y down.
+#
+# The shelf camera has no trained product-detector model, so it uses perception.shelf_reference
+# (M27) instead of analytics.shelf_gaps: take one photo of the shelf FULLY STOCKED and one EMPTY
+# at setup time (same mount, same framing - doesn't have to come from the video) and save them as
+#
+#   snapshots/shelf_full.jpg
+#   snapshots/shelf_empty.jpg
+#
+# Placeholder gray images are already at those two paths so this file runs without crashing
+# before you have real ones - replace them before trusting any shelf numbers.
+
+store:
+  name: Mock Store
+  tz: "+05:30"
+out_dir: out/mock_store
+
+cameras:
+  entrance:                       # video A: the doorway
+    lines:
+      door: {a: [300, 1100], b: [800, 1100], in_point: [550, 1500]}
+  checkout:                       # video B: the billing counter
+    zones:
+      queue_1:   [[350, 300], [750, 300], [750, 1200], [350, 1200]]
+      counter_1: [[350, 1200], [750, 1200], [750, 1600], [350, 1600]]
+  shelf:                          # video C: one shelf, two rows of two slots
+    shelves:
+      - id: A
+        rect: [80, 100, 1000, 400]
+        slots:
+          - {id: A1, x: [80, 540], product: "Maggi Masala Noodles 70g"}
+          - {id: A2, x: [540, 1000], product: "Parle-G Biscuits 250g"}
+      - id: B
+        rect: [80, 420, 1000, 720]
+        slots:
+          - {id: B1, x: [80, 540], product: "Tata Salt 1kg"}
+          - {id: B2, x: [540, 1000], product: "Aashirvaad Atta 1kg"}
+
+modules:
+  # 1 Look: three videos play the part of cameras
+  - use: source.video_file
+    name: video_door
+    config: {camera: entrance, path: clips/door.mp4, start: "2026-09-29T18:00:00+05:30", stride: 2}
+  - use: source.video_file
+    name: video_counter
+    config: {camera: checkout, path: clips/counter.mp4, start: "2026-09-29T18:10:00+05:30", stride: 2}
+  - use: source.video_file
+    name: video_shelf
+    config: {camera: shelf, path: clips/shelf.mp4, start: "2026-09-29T18:20:00+05:30", stride: 5}
+
+  # 2 Spot: entrance/checkout get the free person model; the shelf uses the reference-photo
+  #   fallback (M27) instead, since there's no trained product detector yet (W2)
+  - use: perception.detector
+    name: spot_door
+    config: {camera: entrance, model: models/yolov8n.onnx, labels: {0: person}, conf: 0.4}
+  - use: perception.detector
+    name: spot_counter
+    config: {camera: checkout, model: models/yolov8n.onnx, labels: {0: person}, conf: 0.4}
+  - use: perception.shelf_reference
+    name: spot_shelf
+    config:
+      camera: shelf
+      full_ref: snapshots/shelf_full.jpg
+      empty_ref: snapshots/shelf_empty.jpg
+      interval_s: 30
+
+  # 3 Follow and count (entrance/checkout only - the shelf camera never moves)
+  - use: perception.tracker
+    name: follow_door
+    config: {camera: entrance}
+  - use: perception.tracker
+    name: follow_counter
+    config: {camera: checkout}
+  - use: analytics.line_counter
+    config: {camera: entrance, line: door}
+  - use: analytics.heatmap
+    config: {camera: entrance, interval_s: 60}
+  - use: analytics.queue_monitor
+    config:
+      camera: checkout
+      interval_s: 5
+      counters:
+        - {id: 1, queue_zone: queue_1, counter_zone: counter_1}
+  - use: integration.pos_mock      # fake bills, so the dashboard can show a conversion rate
+
+  # 4 Decide: is each shelf slot OK, LOW or EMPTY? (needs a few observations to trust a change)
+  - use: analytics.shelf_state
+    config: {window: 3, low_below: 0.5, empty_below: 0.15, recover_above: 0.6}
+
+  # 5 Tell: alerts, the logbook, the terminal
+  - use: output.alert_engine
+    config:
+      rules:
+        - {event: queue_update, where: {total_length: {gte: 3}}, kind: long_queue, severity: warn,
+           message: "{total_length} people waiting at billing", key: queue_len, cooldown_s: 60}
+        - {event: shelf_gap, where: {state: EMPTY}, kind: restock, severity: warn,
+           message: "Refill {product} (slot {slot})", key: "{slot}", cooldown_s: 300}
+  - use: output.console
+    config: {events: [entry, exit, service_complete, shelf_gap, shelf_restocked]}
+  - use: output.event_store
+  - use: ops.health

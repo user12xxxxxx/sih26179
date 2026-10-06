@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DukaanDrishti dashboard</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+          --navy:#1f497d; --blue:#0070c0; --green:#3b7d23; --orange:#c55a11; --red:#b23b2e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f141a; --card:#18202a; --ink:#e5e7eb; --muted:#9ca3af; --line:#2a3440; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; justify-content:space-between; align-items:baseline; padding:16px 20px; flex-wrap:wrap; gap:8px; }
+  h1 { font-size:20px; margin:0; }
+  .muted { color:var(--muted); font-size:13px; }
+  main { padding:0 20px 24px; display:grid; gap:16px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .tile .v { font-size:28px; font-weight:700; }
+  .tile .l { color:var(--muted); font-size:13px; }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  canvas { width:100%; height:auto; display:block; border-radius:6px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:7px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  li:last-child { border-bottom:0; }
+  .sev { display:inline-block; min-width:62px; font-size:12px; font-weight:700; }
+  .critical { color:var(--red); } .warn { color:var(--orange); } .info { color:var(--blue); }
+</style>
+</head>
+<body>
+<header>
+  <h1>DukaanDrishti &middot; store dashboard</h1>
+  <span class="muted"><a href="/alerts" style="color:inherit;">Phone alerts &rarr;</a> &middot; <span id="asof">connecting&hellip;</span></span>
+</header>
+<main>
+  <section class="tiles" id="tiles"></section>
+  <section class="grid2">
+    <div class="card"><h2>Alerts</h2><ul id="alerts"><li class="muted">No alerts yet</li></ul></div>
+    <div class="card"><h2>Visitors per 5 minutes</h2><canvas id="series" width="640" height="260"></canvas></div>
+    <div class="card"><h2>Entrance heatmap</h2><canvas id="heat" width="640" height="360"></canvas>
+      <p class="muted" id="heatnote"></p></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtTime = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : '-';
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function tile(label, value, color) {
+  return `<div class="card tile"><div class="v" style="color:${color || 'inherit'}">${value}</div><div class="l">${label}</div></div>`;
+}
+
+function renderKpis(k) {
+  $('asof').textContent = 'data as of ' + fmtTime(k.now);
+  const f = k.forecast || {};
+  const counters = f.open_counters != null ? `${f.open_counters} &rarr; ${f.recommended_counters}` : '-';
+  const need = f.recommended_counters > f.open_counters;
+  $('tiles').innerHTML = [
+    tile('Visitors in', k.entries, css('--navy')),
+    tile('In store now', k.in_store),
+    tile('Queue length', k.queue ? k.queue.total_length : '-'),
+    tile('Predicted wait (min)', f.predicted_wait_min ?? '-', need ? css('--red') : css('--green')),
+    tile('Counters open &rarr; needed', counters, need ? css('--red') : 'inherit'),
+    tile('Avg wait (s)', k.avg_wait_s ?? '-'),
+    tile('Bills', k.bills),
+    tile('Conversion', k.conversion != null ? Math.round(k.conversion * 100) + '%' : '-', css('--blue')),
+  ].join('');
+}
+
+function renderAlerts(list) {
+  if (!list.length) return;
+  $('alerts').innerHTML = list.map(a =>
+    `<li><span class="sev ${a.severity}">${a.severity.toUpperCase()}</span> ${fmtTime(a.ts)} &middot; ${a.message}</li>`).join('');
+}
+
+function renderSeries(rows) {
+  const c = $('series'), g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (!rows.length) return;
+  const max = Math.max(...rows.map(r => r.entries)), pad = 28, w = (c.width - pad) / rows.length;
+  g.fillStyle = css('--blue');
+  rows.forEach((r, i) => {
+    const h = (c.height - pad) * r.entries / max;
+    g.fillRect(pad + i * w + 1, c.height - pad - h, Math.max(w - 2, 1), h);
+  });
+  g.fillStyle = css('--muted'); g.font = '12px system-ui';
+  g.fillText(String(max), 2, 12);
+  g.fillText(fmtTime(rows[0].ts), pad, c.height - 8);
+  g.fillText(fmtTime(rows[rows.length - 1].ts), c.width - 48, c.height - 8);
+}
+
+function renderHeat(h) {
+  const c = $('heat'), g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (!h || !h.grid) { $('heatnote').textContent = 'No heatmap yet'; return; }
+  // paint one pixel per grid cell on a small canvas, then scale up with smoothing (soft blobs)
+  const small = document.createElement('canvas');
+  small.width = h.cols; small.height = h.rows;
+  const sg = small.getContext('2d'), img = sg.createImageData(h.cols, h.rows);
+  const grid = blur(blur(h.grid));
+  const peak = Math.max(...grid.flat()) || 1;
+  grid.forEach((row, y) => row.forEach((raw, x) => {
+    const v = raw / peak;
+    const s = Math.log1p(40 * v) / Math.log1p(40);   // log scale: show quiet areas too
+    const i = 4 * (y * h.cols + x);
+    const hue = 240 - 240 * s;                        // blue (little time) -> red (a lot)
+    const [r, gg, b] = hsl(hue, 0.9, 0.5);
+    img.data[i] = r; img.data[i + 1] = gg; img.data[i + 2] = b; img.data[i + 3] = v > 0 ? 70 + 185 * s : 0;
+  }));
+  sg.putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = true;
+  g.drawImage(small, 0, 0, c.width, c.height);
+  $('heatnote').textContent = `${Math.round(h.person_seconds / 60)} person-minutes, updated ${fmtTime(h.ts)}`;
+}
+
+function blur(g) {  // 3x3 box blur so single cells merge into soft areas
+  return g.map((row, y) => row.map((_, x) => {
+    let sum = 0, n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const r = g[y + dy]; if (r && r[x + dx] !== undefined) { sum += r[x + dx]; n++; }
+    }
+    return sum / n;
+  }));
+}
+
+function hsl(h, s, l) {  // -> [r, g, b] 0..255
+  const k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [255 * f(0), 255 * f(8), 255 * f(4)].map(Math.round);
+}
+
+async function refresh() {
+  try {
+    const [k, a, s, h] = await Promise.all([
+      fetch('/api/kpis').then(r => r.json()),
+      fetch('/api/alerts?limit=10').then(r => r.json()),
+      fetch('/api/series/entries?bucket_s=300').then(r => r.json()),
+      fetch('/api/heatmap/entrance').then(r => r.json()),
+    ]);
+    renderKpis(k); renderAlerts(a); renderSeries(s); renderHeat(h);
+  } catch (e) {
+    $('asof').textContent = 'API not reachable';
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

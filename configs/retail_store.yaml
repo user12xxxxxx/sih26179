@@ -1,0 +1,107 @@
+# The real thing: cameras (or recorded clips) -> models -> analytics -> alerts + event store.
+#   python -m drishti run configs/retail_store.yaml
+#
+# Before the first run:
+#   1. export a person model:  yolo export model=yolov8n.pt format=onnx   -> models/yolov8n.onnx
+#   2. train/export a shelf product model (SKU-110K) on the Lenovo      -> models/sku110k_yolov8n.onnx
+#   3. redraw configs/cameras/*.yaml for your cameras with tools/setup_zones.py
+#   4. set the RTSP URLs (or switch the sources to source.video_file with recorded clips)
+# Moving to the Qualcomm board later: change `backend:`/`model:` on the detectors, nothing else.
+
+store:
+  name: Mock store
+  tz: "+05:30"
+out_dir: out/live
+
+cameras:
+  entrance: cameras/entrance.yaml
+  checkout: cameras/checkout.yaml
+  shelf_a: cameras/shelf_a.yaml
+
+modules:
+  # ---- sources --------------------------------------------------------------------------
+  - use: source.rtsp
+    name: cam_entrance
+    config: {camera: entrance, url: "rtsp://USER:PASS@192.168.1.51:554/stream1", max_fps: 10}
+  - use: source.rtsp
+    name: cam_checkout
+    config: {camera: checkout, url: "rtsp://USER:PASS@192.168.1.52:554/stream1", max_fps: 10}
+  - use: source.rtsp
+    name: cam_shelf_a
+    config: {camera: shelf_a, url: "rtsp://USER:PASS@192.168.1.53:554/stream1", max_fps: 2}
+  # replay instead of live:
+  # - use: source.video_file
+  #   name: cam_entrance
+  #   config: {camera: entrance, path: clips/entrance.mp4, start: "2026-10-01T17:00:00+05:30"}
+
+  # ---- perception -----------------------------------------------------------------------
+  - use: perception.detector
+    name: det_entrance
+    config: {camera: entrance, model: models/yolov8n.onnx, labels: {0: person}, input_size: 640, conf: 0.4}
+  - use: perception.detector
+    name: det_checkout
+    config: {camera: checkout, model: models/yolov8n.onnx, labels: {0: person}, input_size: 640, conf: 0.4}
+  - use: perception.detector
+    name: det_shelf_people          # only to know when someone blocks the shelf
+    config: {camera: shelf_a, model: models/yolov8n.onnx, labels: {0: person}, input_size: 416}
+  - use: perception.detector
+    name: det_shelf_products
+    config: {camera: shelf_a, model: models/sku110k_yolov8n.onnx, labels: {0: product}, input_size: 1024,
+             conf: 0.3, min_interval_s: 60}
+  - use: perception.tracker
+    name: trk_entrance
+    config: {camera: entrance, backend: iou}
+  - use: perception.tracker
+    name: trk_checkout
+    config: {camera: checkout, backend: iou}
+  - use: perception.ocr
+    enabled: false                  # turn on once an OCR engine is installed
+    config: {camera: shelf_a, mode: regions, engine: rapidocr, parser: price, interval_s: 300}
+  - use: perception.redacted_snapshots
+    enabled: false                  # blurred stills for drawing zones; keep off in the demo
+    config: {camera: entrance, every_s: 600}
+
+  # ---- analytics ------------------------------------------------------------------------
+  - use: analytics.line_counter
+    config: {camera: entrance, line: door}
+  - use: analytics.zone_dwell
+    config: {camera: entrance, zones: [promo]}
+  - use: analytics.heatmap
+    config: {camera: entrance, interval_s: 300}
+  - use: analytics.queue_monitor
+    config:
+      camera: checkout
+      counters:
+        - {id: 1, queue_zone: queue_1, counter_zone: counter_1}
+        - {id: 2, queue_zone: queue_2, counter_zone: counter_2}
+  - use: analytics.queue_forecast
+    config: {camera: checkout, shop_time_min: [5, 15], max_counters: 2, default_service_s: 60}
+  - use: analytics.shelf_gaps
+    config: {camera: shelf_a}
+  - use: analytics.shelf_state
+  - use: analytics.planogram
+    enabled: false
+    config: {camera: shelf_a}
+
+  # ---- outputs ----------------------------------------------------------------------------
+  - use: output.alert_engine
+    config:
+      rules:
+        - {event: shelf_gap, where: {state: EMPTY}, kind: restock, severity: warn,
+           message: "Refill {product} (slot {slot})", key: "{slot}", cooldown_s: 600}
+        - {event: shelf_gap, where: {state: LOW}, kind: low_stock, severity: info,
+           message: "{product} running low (slot {slot})", key: "{slot}", cooldown_s: 1800}
+        - {event: queue_forecast, where: {recommended_counters: {gt: $open_counters}}, kind: open_counter,
+           severity: critical, message: "Open counter {recommended_counters}: ~{predicted_wait_min} min wait expected",
+           key: queue, cooldown_s: 300}
+        - {event: planogram_mismatch, kind: planogram, severity: info,
+           message: "Slot {slot}: expected {expected}, label reads '{read}'", key: "{slot}", cooldown_s: 3600}
+  - use: output.console
+  - use: output.event_store
+  - use: output.mqtt_bridge
+    enabled: false                  # needs mosquitto + paho-mqtt
+    config: {host: localhost, prefix: drishti/mock-store}
+  - use: ops.health
+  - use: integration.cloud_sync
+    enabled: false
+    config: {endpoint: "https://example.org/api/stores/mock/summary"}

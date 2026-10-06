@@ -1,0 +1,60 @@
+# Smoke test: does the install actually detect and track people?
+#
+# Uses stock CCTV footage (clips/stock_cashier.mp4, clips/stock_retail.mp4) instead of your own
+# filmed clips, so there's nothing to calibrate: the "zones" below are deliberately oversized
+# rectangles that cover any frame size, not real pixel coordinates read off a snapshot. This is
+# NOT a substitute for prototype0.yaml / PROTOTYPE0_WINDOWS.md - it only proves the pipeline runs
+# and the detector finds people. It does not give you an accuracy number: these clips are not
+# yours, so there is no hand count to compare against.
+#
+#   python -m drishti run configs/smoke_test.yaml
+#
+# Watch the terminal: "zone_occupancy ... count > 0" while people are on screen means detection
+# and tracking both work. If count stays 0 the whole clip, see PROTOTYPE0_WINDOWS.md's
+# "If the numbers are off" table (conf threshold, camera angle, etc).
+
+store:
+  name: Smoke Test
+  tz: "+05:30"
+out_dir: out/smoke
+
+cameras:
+  cam_cashier:
+    zones:
+      whole_frame: [[-100000, -100000], [100000, -100000], [100000, 100000], [-100000, 100000]]
+  cam_retail:
+    zones:
+      whole_frame: [[-100000, -100000], [100000, -100000], [100000, 100000], [-100000, 100000]]
+
+modules:
+  - use: source.video_file
+    name: video_cashier
+    config: {camera: cam_cashier, path: clips/stock_cashier.mp4, stride: 2}
+  - use: source.video_file
+    name: video_retail
+    config: {camera: cam_retail, path: clips/stock_retail.mp4, stride: 2}
+
+  - use: perception.detector
+    name: spot_cashier
+    config: {camera: cam_cashier, model: models/yolov8n.onnx, labels: {0: person}, conf: 0.35}
+  - use: perception.detector
+    name: spot_retail
+    config: {camera: cam_retail, model: models/yolov8n.onnx, labels: {0: person}, conf: 0.35}
+
+  - use: perception.tracker
+    name: follow_cashier
+    config: {camera: cam_cashier}
+  - use: perception.tracker
+    name: follow_retail
+    config: {camera: cam_retail}
+
+  - use: analytics.zone_dwell
+    name: presence_cashier
+    config: {camera: cam_cashier, zones: [whole_frame], min_dwell_s: 0, occupancy_every_s: 5}
+  - use: analytics.zone_dwell
+    name: presence_retail
+    config: {camera: cam_retail, zones: [whole_frame], min_dwell_s: 0, occupancy_every_s: 5}
+
+  - use: output.console
+    config: {events: [zone_occupancy]}
+  - use: ops.health

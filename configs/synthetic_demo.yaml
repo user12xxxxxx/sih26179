@@ -1,0 +1,108 @@
+# Runs with no camera and no model: the simulator publishes the tracks a detector would.
+#   python -m drishti run configs/synthetic_demo.yaml
+#   python -m drishti report --db out/synthetic/events.db
+#   python -m drishti serve  --db out/synthetic/events.db   -> http://127.0.0.1:8000
+#
+# Scenario: 60 minutes of store time, a rush from minute 20 to 32. Watch the forecast ask for a
+# second counter *before* the queue builds, and the simulated manager open it.
+
+store:
+  name: Demo Kirana
+  tz: "+05:30"
+out_dir: out/synthetic
+
+cameras:
+  entrance:
+    frame_size: [1280, 720]
+    lines:
+      door: {a: [380, 400], b: [900, 400], in_point: [640, 650]}
+    zones:
+      promo: [[950, 480], [1250, 480], [1250, 700], [950, 700]]
+  checkout:
+    frame_size: [1280, 720]
+    zones:
+      queue_1:   [[170, 100], [330, 100], [330, 560], [170, 560]]
+      counter_1: [[170, 560], [330, 560], [330, 720], [170, 720]]
+      queue_2:   [[470, 100], [630, 100], [630, 560], [470, 560]]
+      counter_2: [[470, 560], [630, 560], [630, 720], [470, 720]]
+      queue_3:   [[770, 100], [930, 100], [930, 560], [770, 560]]
+      counter_3: [[770, 560], [930, 560], [930, 720], [770, 720]]
+
+modules:
+  - use: source.synthetic
+    name: sim
+    config:
+      duration_min: 60
+      arrivals_per_min: 1.0
+      rush: {start_min: 20, end_min: 32, arrivals_per_min: 3.0}
+      shop_time_min: [6, 12]
+      service_s: 40
+      counters_open: 1
+      max_counters: 3
+
+  - use: analytics.line_counter
+    config: {camera: entrance, line: door}
+
+  - use: analytics.zone_dwell
+    config: {camera: entrance, zones: [promo], min_dwell_s: 3}
+
+  - use: analytics.heatmap
+    name: heatmap_entrance
+    config: {camera: entrance, grid: [64, 36], interval_s: 300}
+
+  - use: analytics.heatmap
+    name: heatmap_checkout
+    config: {camera: checkout, grid: [64, 36], interval_s: 300}
+
+  - use: analytics.queue_monitor
+    config:
+      camera: checkout
+      interval_s: 15
+      counters:
+        - {id: 1, queue_zone: queue_1, counter_zone: counter_1}
+        - {id: 2, queue_zone: queue_2, counter_zone: counter_2}
+        - {id: 3, queue_zone: queue_3, counter_zone: counter_3}
+
+  - use: analytics.queue_forecast
+    config:
+      camera: checkout
+      shop_time_min: [6, 12]
+      checkout_prob: 0.85
+      horizon_min: 5
+      target_wait_s: 180
+      max_counters: 3
+      default_service_s: 45
+      interval_s: 30
+
+  - use: integration.pos_mock
+
+  - use: output.alert_engine
+    config:
+      rules:
+        - event: queue_forecast
+          where: {recommended_counters: {gt: $open_counters}}
+          kind: open_counter
+          severity: critical
+          message: "Open counter {recommended_counters}: about {predicted_wait_min} min wait expected with {open_counters} open"
+          key: queue
+          cooldown_s: 300
+        - event: queue_update
+          where: {total_length: {gte: 6}}
+          kind: long_queue
+          severity: warn
+          message: "{total_length} people waiting at billing"
+          key: queue_len
+          cooldown_s: 300
+        - event: shelf_gap
+          where: {state: EMPTY}
+          kind: restock
+          severity: warn
+          message: "Refill {product} (slot {slot})"
+          key: "{slot}"
+          cooldown_s: 600
+
+  - use: output.console
+    config: {events: [counter_status]}
+
+  - use: output.event_store
+    config: {path: events.db}

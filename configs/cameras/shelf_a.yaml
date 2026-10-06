@@ -1,0 +1,16 @@
+# Example geometry for a shelf-facing camera: each row is a rectangle, split into slots.
+# `product` and `price` are what should be there (used by analytics.planogram).
+frame_size: [1920, 1080]
+shelves:
+  - id: A
+    rect: [120, 120, 1800, 430]
+    slots:
+      - {id: A1, x: [120, 540], product: "Maggi Masala Noodles 70g", price: 14}
+      - {id: A2, x: [540, 960], product: "Parle-G Biscuits 250g", price: 25}
+      - {id: A3, x: [960, 1380], product: "Tata Salt 1kg", price: 28}
+      - {id: A4, x: [1380, 1800], product: "Surf Excel 500g", price: 72}
+  - id: B
+    rect: [120, 520, 1800, 830]
+    slots:
+      - {id: B1, x: [120, 960], product: "Aashirvaad Atta 1kg", price: 60}
+      - {id: B2, x: [960, 1800], product: "Fortune Oil 1L", price: 150}

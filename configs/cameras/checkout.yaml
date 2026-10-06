@@ -1,0 +1,7 @@
+# Example geometry for the billing-counter camera (one queue lane + counter per billing desk).
+frame_size: [1920, 1080]
+zones:
+  queue_1:   [[250, 150], [520, 150], [520, 820], [250, 820]]
+  counter_1: [[250, 820], [520, 820], [520, 1080], [250, 1080]]
+  queue_2:   [[800, 150], [1070, 150], [1070, 820], [800, 820]]
+  counter_2: [[800, 820], [1070, 820], [1070, 1080], [800, 1080]]

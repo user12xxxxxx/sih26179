@@ -1,0 +1,15 @@
+# Allowlist: ignore everything, then publish only what is needed to install, run and test.
+/*
+!/.gitignore
+!/README.md
+!/PROTOTYPE0_WINDOWS.md
+!/pyproject.toml
+!/drishti/
+!/configs/
+!/tests/
+!/tools/
+
+# Never publish, even inside allowed folders
+__pycache__/
+*.pyc
+*.db

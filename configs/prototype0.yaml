@@ -1,0 +1,74 @@
+# Prototype 0: your two phone videos instead of the simulator.
+#
+#   python -m drishti snapshot clips/door.mp4        -> clips/door_grid.jpg   (read the numbers)
+#   python -m drishti snapshot clips/counter.mp4     -> clips/counter_grid.jpg
+#   ... replace the example numbers below with yours, then:
+#   python -m drishti run configs/prototype0.yaml
+#   python -m drishti report --db out/p0/events.db
+#   python -m drishti serve  --db out/p0/events.db   -> http://127.0.0.1:8000
+#
+# Every [x, y] is a pixel position read off the grid image: x across, y down.
+
+store:
+  name: Prototype 0
+  tz: "+05:30"
+out_dir: out/p0
+
+cameras:
+  entrance:                       # video A: the doorway
+    lines:
+      # a and b = the two ends of a line drawn across the doorway on the floor.
+      # in_point = any spot on the INSIDE of the room. Crossing towards it counts as an entry.
+      door: {a: [300, 1100], b: [800, 1100], in_point: [550, 1500]}
+  checkout:                       # video B: the table playing the billing counter
+    zones:
+      # four corners each, going round the shape
+      queue_1:   [[350, 300], [750, 300], [750, 1200], [350, 1200]]    # where people stand waiting
+      counter_1: [[350, 1200], [750, 1200], [750, 1600], [350, 1600]]  # where the person paying stands
+
+modules:
+  # 1 Look: the two videos play the part of cameras
+  - use: source.video_file
+    name: video_door
+    config: {camera: entrance, path: clips/door.mp4, start: "2026-09-29T18:00:00+05:30", stride: 2}
+  - use: source.video_file
+    name: video_counter
+    config: {camera: checkout, path: clips/counter.mp4, start: "2026-09-29T18:10:00+05:30", stride: 2}
+
+  # 2 Spot: the free pre-trained model finds people in every frame
+  - use: perception.detector
+    name: spot_door
+    config: {camera: entrance, model: models/yolov8n.onnx, labels: {0: person}, conf: 0.4}
+  - use: perception.detector
+    name: spot_counter
+    config: {camera: checkout, model: models/yolov8n.onnx, labels: {0: person}, conf: 0.4}
+
+  # 3 Follow and count
+  - use: perception.tracker
+    name: follow_door
+    config: {camera: entrance}
+  - use: perception.tracker
+    name: follow_counter
+    config: {camera: checkout}
+  - use: analytics.line_counter
+    config: {camera: entrance, line: door}
+  - use: analytics.heatmap
+    config: {camera: entrance, interval_s: 60}
+  - use: analytics.queue_monitor
+    config:
+      camera: checkout
+      interval_s: 5
+      counters:
+        - {id: 1, queue_zone: queue_1, counter_zone: counter_1}
+  - use: integration.pos_mock      # fake bills, so the dashboard can show a conversion rate
+
+  # 4 Tell: alerts, the logbook, the terminal
+  - use: output.alert_engine
+    config:
+      rules:
+        - {event: queue_update, where: {total_length: {gte: 3}}, kind: long_queue, severity: warn,
+           message: "{total_length} people waiting at billing", key: queue_len, cooldown_s: 60}
+  - use: output.console
+    config: {events: [entry, exit, service_complete]}
+  - use: output.event_store
+  - use: ops.health

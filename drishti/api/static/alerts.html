@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DukaanDrishti alerts</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+          --blue:#0070c0; --green:#3b7d23; --orange:#c55a11; --red:#b23b2e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f141a; --card:#18202a; --ink:#e5e7eb; --muted:#9ca3af; --line:#2a3440; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font:16px/1.4 system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+         background:var(--bg); color:var(--ink); padding-bottom: env(safe-area-inset-bottom); }
+  header { position:sticky; top:0; display:flex; justify-content:space-between; align-items:center;
+           padding:14px 16px; background:var(--bg); border-bottom:1px solid var(--line); gap:10px; z-index:1; }
+  h1 { font-size:18px; margin:0; }
+  .status { font-size:13px; color:var(--muted); }
+  .status.live::before { content:"\25cf "; color:var(--green); }
+  .status.down::before { content:"\25cf "; color:var(--red); }
+  button { font:inherit; border:0; border-radius:10px; padding:10px 16px; background:var(--blue);
+           color:#fff; font-weight:700; }
+  button.muted { background:var(--muted); }
+  #gate { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+          justify-content:center; gap:16px; background:var(--bg); z-index:5; text-align:center; padding:24px; }
+  #gate p { color:var(--muted); max-width:320px; margin:0; }
+  #gate button { font-size:18px; padding:16px 32px; }
+  main { padding:12px 16px 40px; display:grid; gap:10px; max-width:640px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px;
+          border-left:6px solid var(--muted); }
+  .card.critical { border-left-color:var(--red); }
+  .card.warn { border-left-color:var(--orange); }
+  .card.info { border-left-color:var(--blue); }
+  .card.fresh { animation: pop 0.6s ease; }
+  @keyframes pop { 0% { transform:scale(1.03); } 100% { transform:scale(1); } }
+  .sev { font-size:12px; font-weight:800; letter-spacing:0.04em; }
+  .critical .sev { color:var(--red); } .warn .sev { color:var(--orange); } .info .sev { color:var(--blue); }
+  .msg { font-size:17px; font-weight:600; margin:4px 0 2px; }
+  .meta { font-size:13px; color:var(--muted); }
+  .empty { text-align:center; color:var(--muted); padding:40px 0; }
+</style>
+</head>
+<body>
+<div id="gate">
+  <h1>DukaanDrishti staff alerts</h1>
+  <p>Keep this open at the counter. Tap once to turn on sound and vibration for new alerts -
+     phones block both until you do.</p>
+  <button id="arm">Enable alerts</button>
+</div>
+<header>
+  <h1><a href="/" style="color:inherit; text-decoration:none;">&larr;</a> Alerts</h1>
+  <div style="display:flex; align-items:center; gap:10px;">
+    <span class="status" id="status">connecting&hellip;</span>
+    <button class="muted" id="mute" hidden>&#128266;</button>
+  </div>
+</header>
+<main id="list"><div class="empty">No alerts yet</div></main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtAgo = (ts) => {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  return Math.round(s / 3600) + 'h ago';
+};
+
+let armed = false, muted = false, lastSeenTs = 0, wakeLock = null, audioCtx = null;
+
+function beep(severity) {
+  if (muted || !audioCtx) return;
+  const pattern = severity === 'critical' ? [880, 660, 880] : severity === 'warn' ? [660, 660] : [520];
+  let t = audioCtx.currentTime;
+  pattern.forEach((freq) => {
+    const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+    osc.frequency.value = freq;
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    osc.start(t); osc.stop(t + 0.25);
+    t += 0.28;
+  });
+}
+
+function buzz(severity) {
+  if (muted || !navigator.vibrate) return;
+  navigator.vibrate(severity === 'critical' ? [300, 100, 300, 100, 300] : severity === 'warn' ? [200, 100, 200] : [120]);
+}
+
+async function requestWakeLock() {
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) { /* not supported, fine */ }
+}
+
+$('arm').addEventListener('click', async () => {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  beep('info');  // confirms sound works, and satisfies the autoplay gesture requirement
+  buzz('info');
+  await requestWakeLock();
+  armed = true;
+  $('gate').remove();
+  $('mute').hidden = false;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && armed) requestWakeLock();
+  });
+});
+
+$('mute').addEventListener('click', () => {
+  muted = !muted;
+  $('mute').textContent = muted ? '\u{1F507}' : '\u{1F50A}';
+  $('mute').classList.toggle('muted', !muted);
+});
+
+function render(list) {
+  if (!list.length) { $('list').innerHTML = '<div class="empty">No alerts yet</div>'; return; }
+  const newest = list[0].ts;
+  $('list').innerHTML = list.map(a => `
+    <div class="card ${a.severity} ${a.ts > lastSeenTs ? 'fresh' : ''}">
+      <span class="sev">${a.severity.toUpperCase()} &middot; ${a.kind}</span>
+      <div class="msg">${a.message}</div>
+      <div class="meta">${a.camera_id || 'store'} &middot; ${fmtAgo(a.ts)}</div>
+    </div>`).join('');
+  if (armed && lastSeenTs && newest > lastSeenTs) {
+    const freshest = list.filter(a => a.ts > lastSeenTs).sort((a, b) =>
+      (b.severity === 'critical') - (a.severity === 'critical'))[0];
+    beep(freshest.severity); buzz(freshest.severity);
+  }
+  lastSeenTs = Math.max(lastSeenTs, newest);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/alerts?limit=30');
+    render(await res.json());
+    $('status').textContent = 'live'; $('status').className = 'status live';
+  } catch (e) {
+    $('status').textContent = 'reconnecting…'; $('status').className = 'status down';
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
